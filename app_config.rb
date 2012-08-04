@@ -6,6 +6,11 @@ SiteUrl = "http://lamernews.com"
 RedisHost = "127.0.0.1"
 RedisPort = 10000
 
+# Akiban config
+AkibanHost = "127.0.0.1"
+AkibanPort = 15432
+AkibanSchema = "lamernews"
+
 # Security
 PBKDF2Iterations = 1000 # Set this to 5000 to improve security. But it is slow.
 UseOpenSSL = false
