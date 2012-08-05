@@ -71,4 +71,4 @@ create table article_votes
   vote_id bigint not null
 );
 
-create index username_idx on users(username);
+create unique index username_idx on users(username);
