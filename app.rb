@@ -27,8 +27,8 @@
 
 require 'app_config'
 require 'rubygems'
-require 'hiredis'
-require 'redis'
+require 'sequel'
+require 'pg'
 require 'page'
 require 'sinatra'
 require 'json'
@@ -38,28 +38,14 @@ require 'comments'
 require 'pbkdf2'
 require 'openssl' if UseOpenSSL
 
-Version = "0.9.3"
+Version = "0.10.0"
 
 before do
-    $r = Redis.new(:host => RedisHost, :port => RedisPort) if !$r
+    $aki_db = Sequel.connect(:adapter => 'postgres', :host => AkibanHost, :port => AkibanPort, :database => AkibanSchema) if !$aki_db
+    Sequel::Postgres.client_min_messages = nil 
+    Sequel::Postgres.force_standard_strings = false
+    Sequel::Postgres.use_iso_date_format = false
     H = HTMLGen.new if !defined?(H)
-    if !defined?(Comments)
-        Comments = RedisComments.new($r,"comment",proc{|c,level|
-            c.sort {|a,b|
-                ascore = compute_comment_score a
-                bscore = compute_comment_score b
-                if ascore == bscore
-                    # If score is the same favor newer comments
-                    b['ctime'].to_i <=> a['ctime'].to_i
-                else
-                    # If score is different order by score.
-                    # FIXME: do something smarter favouring newest comments
-                    # but only in the short time.
-                    bscore <=> ascore
-                end
-            }
-        })
-    end
     $user = nil
     auth_user(request.cookies['auth'])
     increment_karma_if_needed if $user
@@ -418,12 +404,12 @@ end
 get "/user/:username" do
     user = get_user_by_username(params[:username])
     halt(404,"Non existing user") if !user
-    posted_news,posted_comments = $r.pipelined {
-        $r.zcard("user.posted:#{user['id']}")
-        $r.zcard("user.comments:#{user['id']}")
-    }
-    H.set_title "#{H.entities user['username']} - #{SiteName}"
-    owner = $user && ($user['id'].to_i == user['id'].to_i)
+    #posted_news,posted_comments = $r.pipelined {
+    #    $r.zcard("user.posted:#{user['id']}")
+    #    $r.zcard("user.comments:#{user['id']}")
+    #}
+    H.set_title "#{H.entities user[:username]} - #{SiteName}"
+    owner = $user && ($user[:id].to_i == user[:id].to_i)
     H.page {
         H.div(:class => "userinfo") {
             H.span(:class => "avatar") {
@@ -431,9 +417,9 @@ get "/user/:username" do
                 digest = Digest::MD5.hexdigest(email)
                 H.img(:src=>"http://gravatar.com/avatar/#{digest}?s=48&d=mm")
             }+" "+
-            H.h2 {H.entities user['username']}+
+            H.h2 {H.entities user[:username]}+
             H.pre {
-                H.entities user['about']
+                #H.entities user[:about]
             }+
             H.ul {
                 H.li {
@@ -441,13 +427,13 @@ get "/user/:username" do
                     "#{(Time.now.to_i-user['ctime'].to_i)/(3600*24)} days ago"
                 }+
                 H.li {H.b {"karma "}+ "#{user['karma']} points"}+
-                H.li {H.b {"posted news "}+posted_news.to_s}+
-                H.li {H.b {"posted comments "}+posted_comments.to_s}+
+                #H.li {H.b {"posted news "}+posted_news.to_s}+
+                #H.li {H.b {"posted comments "}+posted_comments.to_s}+
                 if owner
                     H.li {H.a(:href=>"/saved/0") {"saved news"}}
                 else "" end+
                 H.li {
-                    H.a(:href=>"/usercomments/"+H.urlencode(user['username'])+
+                    H.a(:href=>"/usercomments/"+H.urlencode(user[:username])+
                                "/0") {
                         "user comments"
                     }
@@ -458,16 +444,16 @@ get "/user/:username" do
                 H.label(:for => "email") {
                     "email (not visible, used for gravatar)"
                 }+H.br+
-                H.inputtext(:id => "email", :name => "email", :size => 40,
-                            :value => H.entities(user['email']))+H.br+
+                #H.inputtext(:id => "email", :name => "email", :size => 40,
+                #            :value => H.entities(user[:email]))+H.br+
                 H.label(:for => "password") {
                     "change password (optional)"
                 }+H.br+
                 H.inputpass(:name => "password", :size => 40)+H.br+
                 H.label(:for => "about") {"about"}+H.br+
-                H.textarea(:id => "about", :name => "about", :cols => 60, :rows => 10){
-                    H.entities(user['about'])
-                }+H.br+
+                #H.textarea(:id => "about", :name => "about", :cols => 60, :rows => 10){
+                #    H.entities(user['about'])
+                #}+H.br+
                 H.button(:name => "update_profile", :value => "Update profile")
             }+
             H.div(:id => "errormsg"){}+
@@ -807,7 +793,8 @@ end
 # users.
 def replies_link
     return "" if !$user
-    count = $user['replies'] || 0
+    #count = $user['replies'] || 0
+    count = 0
     H.a(:href => "/replies", :class => "replies") {
         "replies"+
         if count.to_i > 0
@@ -827,11 +814,11 @@ def application_header
     }
     rnavbar = H.nav(:id => "account") {
         if $user
-            H.a(:href => "/user/"+H.urlencode($user['username'])) { 
-                H.entities $user['username']+" (#{$user['karma']})"
+            H.a(:href => "/user/"+H.urlencode($user[:username])) { 
+                H.entities $user[:username]+" (#{$user[:karma]})"
             }+" | "+
             H.a(:href =>
-                "/logout?apisecret=#{$user['apisecret']}") {
+                "/logout?apisecret=#{$user[:apisecret]}") {
                 "logout"
             }
         else
@@ -879,6 +866,17 @@ end
 # User and authentication
 ################################################################################
 
+def validate_auth_token(auth_token)
+  query = "select user_id from auth_details where auth_token = '#{auth_token}'"
+  res = $aki_db[query]
+  res.collect { |row|
+    row.each { |k,v|
+      return v
+    }
+  }
+  return nil
+end
+
 # Try to authenticate the user, if the credentials are ok we populate the
 # $user global with the user information.
 # Otherwise $user is set to nil, so you can test for authenticated user
@@ -887,10 +885,18 @@ end
 # Return value: none, the function works by side effect.
 def auth_user(auth)
     return if !auth
-    id = $r.get("auth:#{auth}")
+    id = validate_auth_token(auth)
     return if !id
-    user = $r.hgetall("user:#{id}")
-    $user = user if user.length > 0
+    user = $aki_db["select * from users where id = #{id}"]
+    if ! $user
+      $user = {}
+    end
+    user.collect { |row|
+      row.each { |k,v|
+        $user[k] = v
+      }
+    }
+    #$user = user
 end
 
 # In Lamer News users get karma visiting the site.
@@ -904,11 +910,11 @@ end
 #
 # Side effects: the user karma is incremented and the $user hash updated.
 def increment_karma_if_needed
-    if $user['karma_incr_time'].to_i < (Time.now.to_i-KarmaIncrementInterval)
-        userkey = "user:#{$user['id']}"
-        $r.hset(userkey,"karma_incr_time",Time.now.to_i)
-        increment_user_karma_by($user['id'],KarmaIncrementAmount)
-    end
+    #if $user['karma_incr_time'].to_i < (Time.now.to_i-KarmaIncrementInterval)
+    #    userkey = "user:#{$user['id']}"
+    #    $r.hset(userkey,"karma_incr_time",Time.now.to_i)
+    #    increment_user_karma_by($user['id'],KarmaIncrementAmount)
+    #end
 end
 
 # Increment the user karma by the specified amount and make sure to
@@ -936,6 +942,20 @@ def get_rand
     rand
 end
 
+# check database whether given username already exists
+def user_exists(username)
+  #res = $aki_db["select count(*) from users where username = ?", username]
+  res = $aki_db["select count(*) from users where username = '#{username}'"]
+  res.collect { |row|
+    row.each { |k,v|
+      if v > 0
+        return true
+      end
+    }
+  }
+  return false
+end
+
 # Create a new user with the specified username/password
 #
 # Return value: the function returns two values, the first is the
@@ -943,31 +963,74 @@ end
 #               is nil. The second is the error message if the function
 #               failed (detected testing the first return value).
 def create_user(username,password)
-    if $r.exists("username.to.id:#{username.downcase}")
-        return nil, "Username is busy, please try a different one."
+    if user_exists(username)
+        return nil, "Username already exists, please try a different one."
     end
-    if rate_limit_by_ip(3600*15,"create_user",request.ip)
-        return nil, "Please wait some time before creating a new user."
-    end
-    id = $r.incr("users.count")
+    #if rate_limit_by_ip(3600*15,"create_user",request.ip)
+    #    return nil, "Please wait some time before creating a new user."
+    #end
+    # get next value for sequence here? redis did this
+    #id = $r.incr("users.count")
     auth_token = get_rand
     salt = get_rand
-    $r.hmset("user:#{id}",
-        "id",id,
-        "username",username,
-        "salt",salt,
-        "password",hash_password(password,salt),
-        "ctime",Time.now.to_i,
-        "karma",UserInitialKarma,
-        "about","",
-        "email","",
-        "auth",auth_token,
-        "apisecret",get_rand,
-        "flags","",
-        "karma_incr_time",Time.new.to_i)
-    $r.set("username.to.id:#{username.downcase}",id)
-    $r.set("auth:#{auth_token}",id)
-    return auth_token,nil
+    hashed_passwd = hash_password(password, salt)
+    api_secret = get_rand
+    # do within 1 transaction
+    $aki_db.transaction do
+      query = "
+        insert into users 
+          (
+           username, 
+           salt, 
+           password, 
+           ctime
+          )
+        values 
+          (
+           '#{username}', 
+           '#{salt}', 
+           '#{hashed_passwd}',
+           now()
+          )"
+      $aki_db << query
+      query = "select id from users where username = '#{username}' and salt = '#{salt}' and password = '#{hashed_passwd}'"
+      user_id = 0
+      ds = $aki_db[query]
+      ds.collect { |row|
+        row.each { |k,v|
+          user_id = v 
+        }
+      }
+      query = "
+        insert into auth_details
+          (
+           user_id,
+           auth_token,
+           api_secret
+          )
+        values
+          (
+           #{user_id},
+           '#{auth_token}',
+           '#{api_secret}'
+          )"
+      $aki_db << query
+      query = "
+        insert into karma
+          (
+            user_id,
+            amount,
+            ctime
+          )
+        values
+          (
+            #{user_id},
+            #{UserInitialKarma},
+            now()
+          )"
+      $aki_db << query
+    end
+    return auth_token, nil
 end
 
 # Update the specified user authentication token with a random generated
@@ -998,16 +1061,19 @@ def hash_password(password,salt)
     p.hex_string
 end
 
-# Return the user from the ID.
-def get_user_by_id(id)
-    $r.hgetall("user:#{id}")
-end
-
 # Return the user from the username.
 def get_user_by_username(username)
-    id = $r.get("username.to.id:#{username.downcase}")
-    return nil if !id
-    get_user_by_id(id)
+    if ! user_exists(username)
+      return nil
+    end
+    query = "select * from users where username = '#{username}'"
+    res = {}
+    $aki_db[query].collect { |row|
+      row.each { |k,v|
+        res[k] = v
+      }
+    }
+    return res
 end
 
 # Check if the username/password pair identifies an user.
@@ -1015,8 +1081,8 @@ end
 def check_user_credentials(username,password)
     user = get_user_by_username(username)
     return nil if !user
-    hp = hash_password(password,user['salt'])
-    (user['password'] == hp) ? [user['auth'],user['apisecret']] : nil
+    hp = hash_password(password,user[:salt])
+    (user[:password] == hp) ? [user[:auth],user[:apisecret]] : nil
 end
 
 # Has the user submitted a news story in the last `NewsSubmissionBreak` seconds?
@@ -1066,6 +1132,50 @@ end
 ################################################################################
 # News
 ################################################################################
+
+def get_count_of_news()
+  count = 0
+  query = "select count(*) from articles"
+  ds = $aki_db[query]
+  ds.collect { |row|
+    row.each { |k,v|
+      count = row[k]
+    }
+  }
+  return count
+end
+
+def get_news_by_query(order_by, limit, opt={})
+  query = "
+select 
+  a.id, 
+  a.title,
+  a.url,
+  a.ctime,
+  a.score,
+  a.rank,
+  u.username
+from 
+  articles a,
+  users u
+where
+  a.user_id = u.id
+  "
+  if order_by == "top"
+    query += " order by a.rank desc"
+  else
+    query += " order by a.ctime desc"
+  end
+
+  query += " limit #{limit}"
+  result = $aki_db[query]
+
+  result.each { |n|
+    update_news_rank_if_needed(n) if opt[:update_rank]
+  }
+
+  return result
+end
 
 # Fetch one or more (if an Array is passed) news from Redis by id.
 # Note that we also load other informations about the news like
@@ -1340,7 +1450,8 @@ end
 # Return the host part of the news URL field.
 # If the url is in the form text:// nil is returned.
 def news_domain(news)
-    su = news["url"].split("/")
+    #su = news["url"].split("/")
+    su = news[:url].split("/")
     domain = (su[0] == "text:") ? nil : su[2]
 end
 
@@ -1408,15 +1519,18 @@ def news_to_html(news)
             "&#9650;"
         }+" "+
         H.h2 {
-            H.a(:href=>news["url"]) {
-                H.entities news["title"]
+            #H.a(:href=>news["url"]) {
+            H.a(:href=>news[:url]) {
+                #H.entities news["title"]
+                H.entities news[:title]
             }
         }+" "+
         H.address {
             if domain
                 "at "+H.entities(domain)
             else "" end +
-            if ($user and $user['id'].to_i == news['user_id'].to_i and
+            #if ($user and $user['id'].to_i == news['user_id'].to_i and
+            if ($user and $user['id'].to_i == news[:user_id].to_i and
                 news['ctime'].to_i > (Time.now.to_i - NewsEditTime))
                 " " + H.a(:href => "/editnews/#{news["id"]}") {
                     "[edit]"
@@ -1429,12 +1543,18 @@ def news_to_html(news)
         H.p {
             "#{news["up"]} up and #{news["down"]} down, posted by "+
             H.username {
-                H.a(:href=>"/user/"+H.urlencode(news["username"])) {
-                    H.entities news["username"]
+                #H.a(:href=>"/user/"+H.urlencode(news["username"])) {
+                #    H.entities news["username"]
+                #}
+                H.a(:href=>"/user/"+H.urlencode(news[:username])) {
+                    H.entities news[:username]
                 }
-            }+" "+str_elapsed(news["ctime"].to_i)+" "+
-            H.a(:href => "/news/#{news["id"]}") {
-                news["comments"]+" comments"
+            #}+" "+str_elapsed(news["ctime"].to_i)+" "+
+            }+" "+str_elapsed(news[:ctime].to_i)+" "+
+            #H.a(:href => "/news/#{news["id"]}") {
+            H.a(:href => "/news/#{news[:id]}") {
+                #news["comments"]+" comments"
+            #    news[:comments]+" comments"
             }
         }+
         if params and params[:debug] and $user and user_is_admin?($user)
@@ -1480,11 +1600,11 @@ end
 # Note: this function can be called in the context of redis.pipelined {...}
 def update_news_rank_if_needed(n)
     real_rank = compute_news_rank(n)
-    delta_rank = (real_rank-n["rank"].to_f).abs
+    delta_rank = (real_rank-n[:rank].to_f).abs
     if delta_rank > 0.000001
-        $r.hmset("news:#{n["id"]}","rank",real_rank)
-        $r.zadd("news.top",real_rank,n["id"])
-        n["rank"] = real_rank.to_s
+        query = "update articles set rank = #{real_rank} where id = #{n[:id]}"
+        $aki_db << query
+        n[:rank] = real_rank.to_s
     end
 end
 
@@ -1499,18 +1619,16 @@ end
 # score since this is done incrementally when there are pageviews on the
 # site.
 def get_top_news(start=0,count=TopNewsPerPage)
-    numitems = $r.zcard("news.top")
-    news_ids = $r.zrevrange("news.top",start,start+(count-1))
-    result = get_news_by_id(news_ids,:update_rank => true)
+    result = get_news_by_query("top", (count-1), :update_rank => true)
+    numitems = get_count_of_news
     # Sort by rank before returning, since we adjusted ranks during iteration.
     return result.sort{|a,b| b["rank"].to_f <=> a["rank"].to_f},numitems
 end
 
 # Get news in chronological order.
 def get_latest_news(start=0,count=LatestNewsPerPage)
-    numitems = $r.zcard("news.cron")
-    news_ids = $r.zrevrange("news.cron",start,start+(count-1))
-    return get_news_by_id(news_ids,:update_rank => true),numitems
+    numitems = get_count_of_news
+    return get_news_by_query("latest", (count - 1), :update_rank => true),numitems
 end
 
 # Get saved news of current user
