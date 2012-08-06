@@ -227,29 +227,29 @@ end
 
 get '/logout' do
     if $user and check_api_secret
-        update_auth_token($user["id"])
+        update_auth_token($user[:id])
     end
     redirect "/"
 end
 
 get "/news/:news_id" do
-    news = get_news_by_id(params["news_id"])
+    news = get_specific_news_by_query(params["news_id"])
     halt(404,"404 - This news does not exist.") if !news
     # Show the news text if it is a news without URL.
     if !news_domain(news)
         c = {
             "body" => news_text(news),
-            "ctime" => news["ctime"],
-            "user_id" => news["user_id"],
-            "thread_id" => news["id"],
+            "ctime" => news[:ctime],
+            "user_id" => news[:user_id],
+            "thread_id" => news[:id],
             "topcomment" => true
         }
-        user = get_user_by_id(news["user_id"]) || DeletedUser
+        user = get_user_by_id(news[:user_id]) || DeletedUser
         top_comment = H.topcomment {comment_to_html(c,user)}
     else
         top_comment = ""
     end
-    H.set_title "#{H.entities news["title"]} - #{SiteName}"
+    H.set_title "#{H.entities news[:title]} - #{SiteName}"
     H.page {
         H.section(:id => "newslist") {
             news_to_html(news)
@@ -264,13 +264,14 @@ get "/news/:news_id" do
             }+H.div(:id => "errormsg"){}
         else
             H.br
-        end +
-        render_comments_for_news(news["id"])+
-        H.script() {'
-            $(function() {
-                $("input[name=post_comment]").click(post_comment);
-            });
-        '}
+        #end +
+        end
+        #render_comments_for_news(news[:id])+
+        #H.script() {'
+       #     $(function() {
+       #         $("input[name=post_comment]").click(post_comment);
+       #     });
+       # '}
     }
 end
 
@@ -559,15 +560,15 @@ post '/api/submit' do
         end
     end
     if params[:news_id].to_i == -1
-        if submitted_recently
-            return {
-                :status => "err",
-                :error => "You have submitted a story too recently, "+
-                "please wait #{allowed_to_post_in_seconds} seconds."
-            }.to_json
-        end
+        #if submitted_recently
+        #    return {
+        #        :status => "err",
+        #        :error => "You have submitted a story too recently, "+
+        #        "please wait #{allowed_to_post_in_seconds} seconds."
+        #    }.to_json
+        #end
         news_id = insert_news(params[:title],params[:url],params[:text],
-                              $user["id"])
+                              $user[:id])
     else
         news_id = edit_news(params[:news_id],params[:title],params[:url],
                             params[:text],$user["id"])
@@ -779,7 +780,7 @@ end
 
 def check_api_secret
     return false if !$user
-    params["apisecret"] and (params["apisecret"] == $user["apisecret"])
+    params["apisecret"] and (params["apisecret"] == $user[:apisecret])
 end
 
 ###############################################################################
@@ -835,7 +836,7 @@ end
 def application_footer
     if $user
         apisecret = H.script() {
-            "var apisecret = '#{$user['apisecret']}';";
+            "var apisecret = '#{$user[:apisecret]}';";
         }
     else
         apisecret = ""
@@ -849,7 +850,7 @@ def application_footer
     end
     H.footer {
         links = [
-            ["source code", "http://github.com/antirez/lamernews"],
+            ["source code", "http://github.com/posulliv/lamernews"],
             ["rss feed", "/rss"],
             ["twitter", FooterTwitterLink],
             ["google group", FooterGoogleGroupLink]
@@ -895,7 +896,13 @@ def auth_user(auth)
         $user[k] = v
       }
     }
-    #$user = user
+    # now retrieve authentication information
+    auth_details = $aki_db["select apisecret from auth_details where user_id = #{id}"]
+    auth_details.collect { |row|
+      row.each { |k,v|
+        $user[k] = v
+      }
+    }
 end
 
 # In Lamer News users get karma visiting the site.
@@ -1005,7 +1012,7 @@ def create_user(username,password)
           (
            user_id,
            auth_token,
-           api_secret
+           apisecret
           )
         values
           (
@@ -1039,12 +1046,9 @@ end
 # Return value: on success the new token is returned. Otherwise nil.
 # Side effect: the auth token is modified.
 def update_auth_token(user_id)
-    user = get_user_by_id(user_id)
-    return nil if !user
-    $r.del("auth:#{user['auth']}")
     new_auth_token = get_rand
-    $r.hmset("user:#{user_id}","auth",new_auth_token)
-    $r.set("auth:#{new_auth_token}",user_id)
+    query = "update auth_details set auth_token = '#{new_auth_token}' where user_id = #{user_id}"
+    $aki_db << query
     return new_auth_token
 end
 
@@ -1109,6 +1113,17 @@ def get_num_user_submitted_articles(user)
     }
   }
   return 0
+end
+
+def get_user_by_id(id)
+  user = $aki_db["select * from users where id = #{id}"]
+  # now retrieve authentication information
+  auth_details = $aki_db["select apisecret from auth_details where user_id = #{id}"]
+  auth_details.collect { |row|
+    row.each { |k,v|
+      user[k] = v
+    }
+  }
 end
 
 # Check if the username/password pair identifies an user.
@@ -1207,6 +1222,34 @@ where
 
   result.each { |n|
     update_news_rank_if_needed(n) if opt[:update_rank]
+  }
+
+  return result
+end
+
+def get_specific_news_by_query(news_id, opt={})
+  query = "
+select 
+  a.id, 
+  a.title,
+  a.url,
+  a.ctime,
+  a.score,
+  a.rank,
+  u.username
+from 
+  articles a,
+  users u
+where
+  a.user_id = u.id
+  and a.id = #{news_id}"
+  result = {}
+  res = $aki_db[query]
+
+  res.each { |row|
+    row.each { |k,v|
+      result[k] = v
+    }
   }
 
   return result
@@ -1386,6 +1429,17 @@ def compute_news_rank(news)
     return rank
 end
 
+def get_news_id_from_url(url)
+  query = "select count(*) from articles where url = '#{url}'"
+  res = $aki_db[query]
+  res.collect { |row|
+    row.each { |k,v|
+      return v
+    }
+  }
+  return 0
+end
+
 # Add a news with the specified url or text.
 #
 # If an url is passed but was already posted in the latest 48 hours the
@@ -1403,35 +1457,44 @@ def insert_news(title,url,text,user_id)
         url = "text://"+text[0...CommentMaxLength]
     end
     # Check for already posted news with the same URL.
-    if !textpost and (id = $r.get("url:"+url))
-        return id.to_i
+    existing_id = get_news_id_from_url(url)
+    if ! textpost and existing_id > 0
+      return existing_id.to_i
     end
     # We can finally insert the news.
-    ctime = Time.new.to_i
-    news_id = $r.incr("news.count")
-    $r.hmset("news:#{news_id}",
-        "id", news_id,
-        "title", title,
-        "url", url,
-        "user_id", user_id,
-        "ctime", ctime,
-        "score", 0,
-        "rank", 0,
-        "up", 0,
-        "down", 0,
-        "comments", 0)
+    #ctime = Time.new.to_i
+    news_id = 0
+    $aki_db.transaction do
+      query = "
+        insert into articles
+          (
+            title,
+            url,
+            score,
+            rank,
+            user_id,
+            ctime
+          )
+        values
+          (
+            '#{title}',
+            '#{url}',
+            0,
+            0,
+            #{user_id},
+            now()
+          )"
+      $aki_db << query
+      query = "select id from articles where url = '#{url}' and title = '#{title}' and user_id = #{user_id}"
+      ds = $aki_db[query]
+      ds.collect { |row|
+        row.each { |k,v|
+          news_id = v 
+        }
+      }
+    end
     # The posting user virtually upvoted the news posting it
-    rank,error = vote_news(news_id,user_id,:up)
-    # Add the news to the user submitted news
-    $r.zadd("user.posted:#{user_id}",ctime,news_id)
-    # Add the news into the chronological view
-    $r.zadd("news.cron",ctime,news_id)
-    # Add the news into the top view
-    $r.zadd("news.top",rank,news_id)
-    # Add the news url for some time to avoid reposts in short time
-    $r.setex("url:"+url,PreventRepostTime,news_id) if !textpost
-    # Set a timeout indicating when the user may post again
-    $r.setex("user:#{$user['id']}:submitted_recently",NewsSubmissionBreak,'1')
+    #rank,error = vote_news(news_id,user_id,:up)
     return news_id
 end
 
@@ -1485,7 +1548,6 @@ end
 # Return the host part of the news URL field.
 # If the url is in the form text:// nil is returned.
 def news_domain(news)
-    #su = news["url"].split("/")
     su = news[:url].split("/")
     domain = (su[0] == "text:") ? nil : su[2]
 end

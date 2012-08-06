@@ -12,8 +12,8 @@ create table auth_details
 (
   user_id bigint not null,
   auth_token varchar(256) not null,
-  api_secret varchar(256) not null,
-  primary key(user_id, auth_token, api_secret),
+  apisecret varchar(256) not null,
+  primary key(user_id, auth_token, apisecret),
   grouping foreign key (user_id) references users(id)
 );
 
