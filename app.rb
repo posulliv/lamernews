@@ -2047,8 +2047,7 @@ end
 # 'c' is the comment representation as a Ruby hash.
 # 'u' is the user, obtained from the user_id by the caller.
 def comment_to_html(c,u)
-    #indent = "margin-left:#{c['level'].to_i*CommentReplyShift}px"
-    indent = 3
+    indent = "margin-left:#{c[:level].to_i*CommentReplyShift}px"
     score = compute_comment_score(c)
     news_id = c[:article_id]
 
@@ -2143,26 +2142,34 @@ def get_all_comments_for_article(news_id)
   return comments
 end
 
-def akiban_render_comments_rec(comment, block)
-  block.call(comment) if comment[:deleted] == 0
-  if comment[:parent_id] != -1
-    parent_comment = get_specific_comment(comment[:article_id], comment[:parent_id])
-    akiban_render_comments_rec(parent_comment, block)
-  end
+def get_all_comments_for_article_with_parent(news_id, parent_id)
+  query = "select * from comments where article_id = #{news_id} and parent_id = #{parent_id}"
+  res = $aki_db[query]
+  comments = {}
+  res.enum_for(:each_with_index).collect { |row, index|
+    comment = {}
+    row.each { |k,v|
+      comment[k] = v
+    }
+    comments[index] = comment
+  }
+  return comments
 end
 
 # TODO clean this up greatly
-def akiban_render_comments(news_id, root, &block)
-  comments = get_all_comments_for_article(news_id)
+def akiban_render_comments(news_id, parent, level, &block)
+  comments = get_all_comments_for_article_with_parent(news_id, parent)
   comments.each { |index, comment|
-    akiban_render_comments_rec(comment, block)
+    comment[:level] = level
+    block.call(comment) if comment[:deleted] == 0
+    akiban_render_comments(news_id, comment[:id], level+1, &block)
   }
 end
 
 def render_comments_for_news(news_id,root=-1)
     html = ""
     user = {}
-    akiban_render_comments(news_id, root) { |c| 
+    akiban_render_comments(news_id, root, 1) { |c| 
         user = get_user_by_id(c[:user_id].to_i) if !user[:id]
         user = DeletedUser if !user[:id]
         html << comment_to_html(c,user)
