@@ -404,10 +404,9 @@ end
 get "/user/:username" do
     user = get_user_by_username(params[:username])
     halt(404,"Non existing user") if !user
-    #posted_news,posted_comments = $r.pipelined {
-    #    $r.zcard("user.posted:#{user['id']}")
-    #    $r.zcard("user.comments:#{user['id']}")
-    #}
+    posted_news = get_num_user_submitted_articles(user)
+    posted_comments = get_num_user_submitted_comments(user)
+    karma = get_user_karma_sql(user)
     H.set_title "#{H.entities user[:username]} - #{SiteName}"
     owner = $user && ($user[:id].to_i == user[:id].to_i)
     H.page {
@@ -426,9 +425,9 @@ get "/user/:username" do
                     H.b {"created "}+
                     "#{(Time.now.to_i-user['ctime'].to_i)/(3600*24)} days ago"
                 }+
-                H.li {H.b {"karma "}+ "#{user['karma']} points"}+
-                #H.li {H.b {"posted news "}+posted_news.to_s}+
-                #H.li {H.b {"posted comments "}+posted_comments.to_s}+
+                H.li {H.b {"karma "}+ "#{karma} points"}+
+                H.li {H.b {"posted news "}+posted_news.to_s}+
+                H.li {H.b {"posted comments "}+posted_comments.to_s}+
                 if owner
                     H.li {H.a(:href=>"/saved/0") {"saved news"}}
                 else "" end+
@@ -1074,6 +1073,42 @@ def get_user_by_username(username)
       }
     }
     return res
+end
+
+# get number of comments this user has submitted
+def get_num_user_submitted_comments(user)
+  query = "select count(*) from comments where user_id = #{user[:id]}"
+  res = $aki_db[query]
+  res.collect { |row|
+    row.each { |k,v|
+      return v
+    }
+  }
+  return 0
+end
+
+# get karma for this user
+def get_user_karma_sql(user)
+  query = "select sum(amount) from karma where user_id = #{user[:id]}"
+  res = $aki_db[query]
+  res.collect { |row|
+    row.each { |k,v|
+      return v
+    }
+  }
+  return 0
+end
+
+# get number of news articles this user has submitted
+def get_num_user_submitted_articles(user)
+  query = "select count(*) from articles where user_id = #{user[:id]}"
+  res = $aki_db[query]
+  res.collect { |row|
+    row.each { |k,v|
+      return v
+    }
+  }
+  return 0
 end
 
 # Check if the username/password pair identifies an user.
