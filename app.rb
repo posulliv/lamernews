@@ -609,6 +609,8 @@ post '/api/votenews' do
     if not check_api_secret
         return {:status => "err", :error => "Wrong form secret."}.to_json
     end
+    require 'pp'
+    pp params
     # Params sanity check
     if (!check_params "news_id","vote_type") or (params["vote_type"] != "up" and
                                                  params["vote_type"] != "down")
@@ -1297,6 +1299,13 @@ where
         result[:comments] = v
       }
     }
+    # Load $User vote information if we are in the context of a
+    # registered user.
+    if $user
+      result[:up] = get_total_article_votes_type(row[:id], 1)
+      result[:down] = get_total_article_votes_type(row[:id], -1)
+    end
+
     results << result
   end
 
@@ -1329,78 +1338,6 @@ where
   }
 
   return result
-end
-
-# Fetch one or more (if an Array is passed) news from Redis by id.
-# Note that we also load other informations about the news like
-# the username of the poster and other informations needed to render
-# the news into HTML.
-#
-# Doing this in a centralized way offers us the ability to exploit
-# Redis pipelining.
-def get_news_by_id(news_ids,opt={})
-    result = []
-    if !news_ids.is_a? Array
-        opt[:single] = true
-        news_ids = [news_ids]
-    end
-    news = $r.pipelined {
-        news_ids.each{|nid|
-            $r.hgetall("news:#{nid}")
-        }
-    }
-    return [] if !news # Can happen only if news_ids is an empty array.
-
-    # Remove empty elements
-    news = news.select{|x| x.length > 0}
-    if news.length == 0
-        return opt[:single] ? nil : []
-    end
-
-    # Get all the news
-    $r.pipelined {
-        news.each{|n|
-            # Adjust rank if too different from the real-time value.
-            hash = {}
-            n.each_slice(2) {|k,v|
-                hash[k] = v
-            }
-            update_news_rank_if_needed(hash) if opt[:update_rank]
-            result << hash
-        }
-    }
-
-    # Get the associated users information
-    usernames = $r.pipelined {
-        result.each{|n|
-            $r.hget("user:#{n["user_id"]}","username")
-        }
-    }
-    result.each_with_index{|n,i|
-        n["username"] = usernames[i]
-    }
-
-    # Load $User vote information if we are in the context of a
-    # registered user.
-    if $user
-        votes = $r.pipelined {
-            result.each{|n|
-                $r.zscore("news.up:#{n["id"]}",$user["id"])
-                $r.zscore("news.down:#{n["id"]}",$user["id"])
-            }
-        }
-        result.each_with_index{|n,i|
-            if votes[i*2]
-                n["voted"] = :up
-            elsif votes[(i*2)+1]
-                n["voted"] = :down
-            end
-        }
-    end
-
-    # Return an array if we got an array as input, otherwise
-    # the single element the caller requested.
-    opt[:single] ? result[0] : result
 end
 
 def vote_already_exists(news_id, user_id)
@@ -1774,14 +1711,14 @@ def news_to_html(news)
     news[:url] = "/news/#{news[:id]}" if !domain
     upclass = "uparrow"
     downclass = "downarrow"
-    if news["voted"] == :up
+    if news[:up] and news[:up] > 0
         upclass << " voted"
         downclass << " disabled"
-    elsif news["voted"] == :down
+    elsif news[:down] and news[:down] > 0
         downclass << " voted"
         upclass << " disabled"
     end
-    H.article("data-news-id" => news["id"]) {
+    H.article("data-news-id" => news[:id]) {
         H.a(:href => "#up", :class => upclass) {
             "&#9650;"
         }+" "+
@@ -1805,7 +1742,7 @@ def news_to_html(news)
             "&#9660;"
         }+
         H.p {
-            "#{news["up"]} up and #{news["down"]} down, posted by "+
+            "#{news[:up]} up and #{news[:down]} down, posted by "+
             H.username {
                 H.a(:href=>"/user/"+H.urlencode(news[:username])) {
                     H.entities news[:username]
@@ -1854,7 +1791,6 @@ end
 # This way ranks are updated incrementally and "live" at every page view
 # only for the news where this makes sense, that is, top news.
 #
-# Note: this function can be called in the context of redis.pipelined {...}
 def update_news_rank_if_needed(n)
     real_rank = compute_news_rank(n)
     delta_rank = (real_rank-n[:rank].to_f).abs
