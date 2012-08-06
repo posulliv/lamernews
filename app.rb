@@ -47,23 +47,6 @@ before do
     Sequel::Postgres.force_standard_strings = false
     Sequel::Postgres.use_iso_date_format = false
     H = HTMLGen.new if !defined?(H)
-    if !defined?(Comments)
-        Comments = AkibanComments.new($aki_db,"comment",proc{|c,level|
-            c.sort {|a,b|
-                ascore = compute_comment_score a
-                bscore = compute_comment_score b
-                if ascore == bscore
-                    # If score is the same favor newer comments
-                    b['ctime'].to_i <=> a['ctime'].to_i
-                else
-                    # If score is different order by score.
-                    # FIXME: do something smarter favouring newest comments
-                    # but only in the short time.
-                    bscore <=> ascore
-                end
-            }
-        })
-    end
     $user = nil
     auth_user(request.cookies['auth'])
     increment_karma_if_needed if $user
@@ -1006,8 +989,6 @@ def create_user(username,password)
     #if rate_limit_by_ip(3600*15,"create_user",request.ip)
     #    return nil, "Please wait some time before creating a new user."
     #end
-    # get next value for sequence here? redis did this
-    #id = $r.incr("users.count")
     auth_token = get_rand
     salt = get_rand
     hashed_passwd = hash_password(password, salt)
@@ -1097,17 +1078,37 @@ end
 
 # Return the user from the username.
 def get_user_by_username(username)
-    if ! user_exists(username)
-      return nil
-    end
-    query = "select * from users where username = '#{username}'"
-    res = {}
-    $aki_db[query].collect { |row|
-      row.each { |k,v|
-        res[k] = v
-      }
+  if ! user_exists(username)
+    return nil
+  end
+  query = "select * from users where username = '#{username}'"
+  user = {}
+  $aki_db[query].collect { |row|
+    row.each { |k,v|
+      user[k] = v
     }
-    return res
+  }
+  # now retrieve authentication information
+  auth_details = $aki_db["select auth_token, apisecret from auth_details where user_id = #{user[:id]}"]
+  auth_details.collect { |row|
+    row.each { |k,v|
+      user[k] = v
+    }
+  }
+  # now retrieve karma information
+  latest_karma = $aki_db["select max(ctime) from karma where user_id = #{user[:id]}"]
+  latest_karma.collect { |row|
+    row.each { |k,v|
+      user[:karma_incr_time] = v
+    }
+  }
+  total_karma = $aki_db["select sum(amount) from karma where user_id = #{user[:id]}"]
+  total_karma.collect { |row|
+    row.each { |k,v|
+      user[:karma] = v
+    }
+  }
+  return user
 end
 
 # get number of comments this user has submitted
@@ -1183,7 +1184,7 @@ def check_user_credentials(username,password)
     user = get_user_by_username(username)
     return nil if !user
     hp = hash_password(password,user[:salt])
-    (user[:password] == hp) ? [user[:auth],user[:apisecret]] : nil
+    (user[:password] == hp) ? [user[:auth_token],user[:apisecret]] : nil
 end
 
 # Has the user submitted a news story in the last `NewsSubmissionBreak` seconds?
