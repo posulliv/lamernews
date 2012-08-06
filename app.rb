@@ -902,6 +902,19 @@ def auth_user(auth)
         $user[k] = v
       }
     }
+    # now retrieve karma information
+    latest_karma = $aki_db["select max(ctime) from karma where user_id = #{id}"]
+    latest_karma.collect { |row|
+      row.each { |k,v|
+        $user[:karma_incr_time] = v
+      }
+    }
+    total_karma = $aki_db["select sum(amount) from karma where user_id = #{id}"]
+    total_karma.collect { |row|
+      row.each { |k,v|
+        $user[:karma] = v
+      }
+    }
 end
 
 # In Lamer News users get karma visiting the site.
@@ -915,28 +928,30 @@ end
 #
 # Side effects: the user karma is incremented and the $user hash updated.
 def increment_karma_if_needed
-    #if $user['karma_incr_time'].to_i < (Time.now.to_i-KarmaIncrementInterval)
-    #    userkey = "user:#{$user['id']}"
-    #    $r.hset(userkey,"karma_incr_time",Time.now.to_i)
-    #    increment_user_karma_by($user['id'],KarmaIncrementAmount)
-    #end
+    if $user[:karma_incr_time].to_i < (Time.now.to_i-KarmaIncrementInterval)
+        increment_user_karma_by($user[:id],KarmaIncrementAmount)
+    end
 end
 
 # Increment the user karma by the specified amount and make sure to
 # update $user to reflect the change if it is the same user id.
 def increment_user_karma_by(user_id,increment)
-    userkey = "user:#{user_id}"
-    $r.hincrby(userkey,"karma",increment)
-    if $user and ($user['id'].to_i == user_id.to_i)
-        $user['karma'] = $user['karma'].to_i + increment
+    query = "insert into karma (user_id, amount, ctime) values (#{user_id}, #{increment}, now())"
+    $aki_db << query
+    if $user and ($user[:id].to_i == user_id.to_i)
+        $user[:karma] = $user[:karma].to_i + increment
     end
 end
 
 # Return the specified user karma.
 def get_user_karma(user_id)
-    return $user['karma'].to_i if $user and (user_id.to_i == $user['id'].to_i)
-    userkey = "user:#{user_id}"
-    karma = $r.hget(userkey,"karma")
+    return $user[:karma].to_i if $user and (user_id.to_i == $user[:id].to_i)
+    total_karma = $aki_db["select sum(amount) from karma where user_id = #{id}"]
+    total_karma.collect { |row|
+      row.each { |k,v|
+        karma = v
+      }
+    }
     karma ? karma.to_i : 0
 end
 
