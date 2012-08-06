@@ -636,7 +636,7 @@ post '/api/votenews' do
     end
     # Vote the news
     vote_type = params["vote_type"].to_sym
-    karma,error = vote_news(params["news_id"].to_i,$user["id"],vote_type)
+    karma,error = vote_news(params["news_id"].to_i,$user[:id],vote_type)
     if karma
         return { :status => "ok" }.to_json
     else
@@ -719,7 +719,7 @@ post '/api/votecomment' do
     # Vote the news
     vote_type = params["vote_type"].to_sym
     news_id,comment_id = params["comment_id"].split("-")
-    if vote_comment(news_id.to_i,comment_id.to_i,$user["id"],vote_type)
+    if vote_comment(news_id.to_i,comment_id.to_i,$user[:id],vote_type)
         return { :status => "ok", :comment_id => params["comment_id"] }.to_json
     else
         return { :status => "err", 
@@ -1402,6 +1402,86 @@ def get_news_by_id(news_ids,opt={})
     opt[:single] ? result[0] : result
 end
 
+def vote_already_exists(news_id, user_id)
+  query = "select count(*) from article_votes av, votes v where av.vote_id = v.id and av.article_id = #{news_id} and v.user_id = #{user_id}"
+  $aki_db.fetch(query) do |row|
+    row.each do |k,v|
+      if v > 0
+        return true
+      end
+    end
+  end
+  return false
+end
+
+def insert_article_vote(vote_type, news_id, user_id)
+  vote_value = 0
+  if vote_type == :up
+    vote_value = 1
+  else
+    vote_value = -1
+  end
+  insert_vote_query = "
+    insert into votes
+      (
+       vote,
+       user_id,
+       ctime
+      )
+    values
+      (
+       #{vote_value},
+       #{user_id},
+       now()
+      )"
+    get_vote_id = "select id from votes where vote = #{vote_value} and user_id = #{user_id} order by ctime desc limit 1"
+    $aki_db.transaction do
+      $aki_db << insert_vote_query
+      vote_id = 0
+      $aki_db.fetch(get_vote_id) do |row|
+        vote_id = row[:id]
+      end
+      article_votes_insert = "
+        insert into article_votes
+        values (#{news_id}, #{vote_id})"
+      $aki_db << article_votes_insert
+    end
+end
+
+def insert_comment_vote(vote_type, comment_id, user_id)
+  vote_value = 0
+  if vote_type == :up
+    vote_value = 1
+  else
+    vote_value = -1
+  end
+  insert_vote_query = "
+    insert into votes
+      (
+       vote,
+       user_id,
+       ctime
+      )
+    values
+      (
+       #{vote_value},
+       #{user_id},
+       now()
+      )"
+    get_vote_id = "select id from votes where vote = #{vote_value} and user_id = #{user_id} order by ctime desc limit 1"
+    $aki_db.transaction do
+      $aki_db << insert_vote_query
+      vote_id = 0
+      $aki_db.fetch(get_vote_id) do |row|
+        vote_id = row[:id]
+      end
+      comment_votes_insert = "
+        insert into comment_votes
+        values (#{comment_id}, #{vote_id})"
+      $aki_db << comment_votes_insert
+    end
+end
+
 # Vote the specified news in the context of a given user.
 # type is either :up or :down
 # 
@@ -1426,13 +1506,12 @@ def vote_news(news_id,user_id,vote_type)
 
     # Now it's time to check if the user already voted that news, either
     # up or down. If so return now.
-    if $r.zscore("news.up:#{news_id}",user_id) or
-       $r.zscore("news.down:#{news_id}",user_id)
-       return false,"Duplicated vote."
+    if vote_already_exists(news_id, user_id)
+      return false, "Duplicated vote."
     end
 
     # Check if the user has enough karma to perform this operation
-    if $user[:id] != news['user_id']
+    if $user[:id] != news[:user_id]
         if (vote_type == :up and
              (get_user_karma(user_id) < NewsUpvoteMinKarma)) or
            (vote_type == :down and
@@ -1441,31 +1520,24 @@ def vote_news(news_id,user_id,vote_type)
         end
     end
 
-    # News was not already voted by that user. Add the vote.
-    # Note that even if there is a race condition here and the user may be
-    # voting from another device/API in the time between the ZSCORE check
-    # and the zadd, this will not result in inconsistencies as we will just
-    # update the vote time with ZADD.
-    if $r.zadd("news.#{vote_type}:#{news_id}", Time.now.to_i, user_id)
-        $r.hincrby("news:#{news_id}",vote_type,1)
-    end
-    $r.zadd("user.saved:#{user_id}", Time.now.to_i, news_id) if vote_type == :up
+    insert_article_vote(vote_type, news_id, user_id)
 
     # Compute the new values of score and karma, updating the news accordingly.
     score = compute_news_score(news)
-    news["score"] = score
+    news[:score] = score
     rank = compute_news_rank(news)
-    $r.hmset("news:#{news_id}",
-        "score",score,
-        "rank",rank)
-    $r.zadd("news.top",rank,news_id)
+    $aki_db.transaction do 
+      # 2 separate queries for now due to akiban bug
+      $aki_db << "update articles set rank = #{rank} where id = #{news_id}"
+      $aki_db << "update articles set score = #{score} where id = #{news_id}"
+    end
 
     # Remove some karma to the user if needed, and transfer karma to the
     # news owner in the case of an upvote.
     if $user['id'] != news['user_id']
         if vote_type == :up
             increment_user_karma_by(user_id,-NewsUpvoteKarmaCost)
-            increment_user_karma_by(news['user_id'],NewsUpvoteKarmaTransfered)
+            increment_user_karma_by(news[:user_id],NewsUpvoteKarmaTransfered)
         else
             increment_user_karma_by(user_id,-NewsDownvoteKarmaCost)
         end
@@ -1474,20 +1546,42 @@ def vote_news(news_id,user_id,vote_type)
     return rank,nil
 end
 
+def get_total_comment_votes_type(comment_id, vote_type)
+  query = "select count(*) from votes v, comment_votes cv where v.id = cv.vote_id and cv.comment_id = #{comment_id} and v.vote = #{vote_type}"
+  total = 0
+  $aki_db.fetch(query) do |row|
+    row.each do |k,v|
+      total = v
+    end
+  end
+  return total
+end
+
+def get_total_article_votes_type(article_id, vote_type)
+  query = "select count(*) from votes v, article_votes av where v.id = av.vote_id and av.article_id = #{article_id} and v.vote = #{vote_type}"
+  total = 0
+  $aki_db.fetch(query) do |row|
+    row.each do |k,v|
+      total = v
+    end
+  end
+  return total
+end
+
 # Given the news compute its score.
 # No side effects.
 def compute_news_score(news)
-    upvotes = $r.zrange("news.up:#{news["id"]}",0,-1,:withscores => true)
-    downvotes = $r.zrange("news.down:#{news["id"]}",0,-1,:withscores => true)
+    upvotes = get_total_article_votes_type(news[:id], 1)
+    downvotes = get_total_article_votes_type(news[:id], -1)
     # FIXME: For now we are doing a naive sum of votes, without time-based
     # filtering, nor IP filtering.
     # We could use just ZCARD here of course, but I'm using ZRANGE already
     # since this is what is needed in the long term for vote analysis.
-    score = (upvotes.length/2) - (downvotes.length/2)
+    score = (upvotes/2) - (downvotes/2)
     # Now let's add the logarithm of the sum of all the votes, since
     # something with 5 up and 5 down is less interesting than something
     # with 50 up and 50 donw.
-    votes = upvotes.length/2+downvotes.length/2
+    votes = upvotes/2+downvotes/2
     if votes > NewsScoreLogStart
         score += Math.log(votes-NewsScoreLogStart)*NewsScoreLogBooster
     end
@@ -1499,7 +1593,7 @@ end
 # The general forumla is RANK = SCORE / (AGE ^ AGING_FACTOR)
 def compute_news_rank(news)
     age = (Time.now.to_i - news["ctime"].to_i)
-    rank = ((news["score"].to_f-1)*1000000)/((age+NewsAgePadding)**RankAgingFactor)
+    rank = ((news[:score].to_f-1)*1000000)/((age+NewsAgePadding)**RankAgingFactor)
     rank = rank-1000 if (age > TopNewsAgeLimit)
     return rank
 end
@@ -1569,7 +1663,7 @@ def insert_news(title,url,text,user_id)
       }
     end
     # The posting user virtually upvoted the news posting it
-    #rank,error = vote_news(news_id,user_id,:up)
+    rank,error = vote_news(news_id,user_id,:up)
     return news_id
 end
 
@@ -1813,6 +1907,9 @@ def get_specific_comment(thread_id, comment_id)
     }
   }
   res[:thread_id] = thread_id.to_i
+  # get voting counts for this comment
+  res[:up] = get_total_comment_votes_type(comment_id, 1)
+  res[:down] = get_total_comment_votes_type(comment_id, -1)
   return res
 end
 
@@ -1926,8 +2023,8 @@ end
 
 # Compute the comment score
 def compute_comment_score(c)
-    upcount = (c['up'] ? c['up'].length : 0)
-    downcount = (c['down'] ? c['down'].length : 0)
+    upcount = get_total_comment_votes_type(c[:id], 1)
+    downcount = get_total_comment_votes_type(c[:id], -1)
     upcount-downcount
 end
 
@@ -1952,8 +2049,7 @@ end
 def comment_to_html(c,u)
     #indent = "margin-left:#{c['level'].to_i*CommentReplyShift}px"
     indent = 3
-    #score = compute_comment_score(c)
-    score = 666
+    score = compute_comment_score(c)
     news_id = c[:article_id]
 
     if c[:deleted] and c[:deleted].to_i == 1
@@ -1991,10 +2087,10 @@ def comment_to_html(c,u)
             if !c[:topcomment]
                 upclass = "uparrow"
                 downclass = "downarrow"
-                if $user and c[:up] and c[:up].index($user[:id].to_i)
+                if $user and c[:up] and c[:user_id] == $user[:id].to_i
                     upclass << " voted"
                     downclass << " disabled"
-                elsif $user and c[:down] and c[:down].index($user[:id].to_i)
+                elsif $user and c[:down] and c[:user_id] == $user[:id].to_i
                     downclass << " voted"
                     upclass << " disabled"
                 end
@@ -2048,7 +2144,7 @@ def get_all_comments_for_article(news_id)
 end
 
 def akiban_render_comments_rec(comment, block)
-  block.call(comment) if ! comment[:deleted] || comment[:parent_id] != -1
+  block.call(comment) if comment[:deleted] == 0
   if comment[:parent_id] != -1
     parent_comment = get_specific_comment(comment[:article_id], comment[:parent_id])
     akiban_render_comments_rec(parent_comment, block)
@@ -2067,29 +2163,27 @@ def render_comments_for_news(news_id,root=-1)
     html = ""
     user = {}
     akiban_render_comments(news_id, root) { |c| 
-        user[c[:id]] = get_user_by_id(c[:user_id].to_i) if !user[c[:id]]
-        user[c[:id]] = DeletedUser if !user[c[:id]]
-        u = user[c[:id]]
-        html << comment_to_html(c,u)
+        user = get_user_by_id(c[:user_id].to_i) if !user[:id]
+        user = DeletedUser if !user[:id]
+        html << comment_to_html(c,user)
     }
     H.div("id" => "comments") {html}
 end
 
 def vote_comment(news_id,comment_id,user_id,vote_type)
     user_id = user_id.to_i
-    comment = Comments.fetch(news_id,comment_id)
+    comment = get_specific_comment(news_id, comment_id)
     return false if !comment
-    varray = (comment[vote_type.to_s] or [])
-    return false if varray.index(user_id)
-    varray << user_id
-    return Comments.edit(news_id,comment_id,{vote_type.to_s => varray})
+    # need to insert some error checking for insert below
+    insert_comment_vote(vote_type, comment_id, user_id)
+    return true
 end
 
 # Get comments in chronological order for the specified user in the
 # specified range.
 def get_user_comments(user_id,start,count)
-    numitems = get_count_of_user_comments(user_id)
-    comments = get_all_comments_for_user(user_id, count-1)
+    numitems = get_count_of_user_comments(user_id.to_i)
+    comments = get_all_comments_for_user(user_id.to_i, count-1)
     ret_comments = []
     comments.each { |index,comment|
       ret_comments << comment
