@@ -423,8 +423,7 @@ get "/user/:username" do
             }+
             H.ul {
                 H.li {
-                    H.b {"created "}+
-                    "#{(Time.now.to_i-user['ctime'].to_i)/(3600*24)} days ago"
+                    H.b {"created "}+str_elapsed(user[:ctime].to_i)
                 }+
                 H.li {H.b {"karma "}+ "#{karma} points"}+
                 H.li {H.b {"posted news "}+posted_news.to_s}+
@@ -1601,7 +1600,7 @@ def news_to_html(news)
     } if news["del"]
     domain = news_domain(news)
     news = {}.merge(news) # Copy the object so we can modify it as we wish.
-    news["url"] = "/news/#{news["id"]}" if !domain
+    news[:url] = "/news/#{news[:id]}" if !domain
     upclass = "uparrow"
     downclass = "downarrow"
     if news["voted"] == :up
@@ -1616,9 +1615,7 @@ def news_to_html(news)
             "&#9650;"
         }+" "+
         H.h2 {
-            #H.a(:href=>news["url"]) {
             H.a(:href=>news[:url]) {
-                #H.entities news["title"]
                 H.entities news[:title]
             }
         }+" "+
@@ -1626,10 +1623,9 @@ def news_to_html(news)
             if domain
                 "at "+H.entities(domain)
             else "" end +
-            #if ($user and $user['id'].to_i == news['user_id'].to_i and
-            if ($user and $user['id'].to_i == news[:user_id].to_i and
+            if ($user and $user[:id].to_i == news[:user_id].to_i and
                 news['ctime'].to_i > (Time.now.to_i - NewsEditTime))
-                " " + H.a(:href => "/editnews/#{news["id"]}") {
+                " " + H.a(:href => "/editnews/#{news[:id]}") {
                     "[edit]"
                 }
             else "" end
@@ -1640,17 +1636,11 @@ def news_to_html(news)
         H.p {
             "#{news["up"]} up and #{news["down"]} down, posted by "+
             H.username {
-                #H.a(:href=>"/user/"+H.urlencode(news["username"])) {
-                #    H.entities news["username"]
-                #}
                 H.a(:href=>"/user/"+H.urlencode(news[:username])) {
                     H.entities news[:username]
                 }
-            #}+" "+str_elapsed(news["ctime"].to_i)+" "+
             }+" "+str_elapsed(news[:ctime].to_i)+" "+
-            #H.a(:href => "/news/#{news["id"]}") {
             H.a(:href => "/news/#{news[:id]}") {
-                #news["comments"]+" comments"
             #    news[:comments]+" comments"
             }
         }+
