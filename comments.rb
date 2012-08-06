@@ -28,9 +28,9 @@
 require 'rubygems'
 require 'json'
 
-class RedisComments
-    def initialize(redis,namespace,sort_proc=nil)
-        @r = redis
+class AkibanComments
+    def initialize(akiban,namespace,sort_proc=nil)
+        @aki = akiban
         @namespace = namespace
         @sort_proc = sort_proc
     end

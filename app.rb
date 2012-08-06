@@ -25,6 +25,7 @@
 # those of the authors and should not be interpreted as representing official
 # policies, either expressed or implied, of Salvatore Sanfilippo.
 
+require 'enumerator'
 require 'app_config'
 require 'rubygems'
 require 'sequel'
@@ -46,6 +47,23 @@ before do
     Sequel::Postgres.force_standard_strings = false
     Sequel::Postgres.use_iso_date_format = false
     H = HTMLGen.new if !defined?(H)
+    if !defined?(Comments)
+        Comments = AkibanComments.new($aki_db,"comment",proc{|c,level|
+            c.sort {|a,b|
+                ascore = compute_comment_score a
+                bscore = compute_comment_score b
+                if ascore == bscore
+                    # If score is the same favor newer comments
+                    b['ctime'].to_i <=> a['ctime'].to_i
+                else
+                    # If score is different order by score.
+                    # FIXME: do something smarter favouring newest comments
+                    # but only in the short time.
+                    bscore <=> ascore
+                end
+            }
+        })
+    end
     $user = nil
     auth_user(request.cookies['auth'])
     increment_karma_if_needed if $user
@@ -95,7 +113,7 @@ get '/latest/:start' do
         :link => "/latest/$"
     }
     H.page {
-        H.h2 {"Latest news"}
+        H.h2 {"Latest news - #{SiteName}"}
         H.section(:id => "newslist") {
             list_items(paginate)
         }
@@ -128,21 +146,21 @@ get '/usercomments/:username/:start' do
     user = get_user_by_username(params[:username])
     halt(404,"Non existing user") if !user
 
-    H.set_title "#{H.entities user['username']} comments - #{SiteName}"
+    H.set_title "#{H.entities user[:username]} comments - #{SiteName}"
     paginate = {
         :get => Proc.new {|start,count|
-            get_user_comments(user['id'],start,count)
+            get_user_comments(user[:id],start,count)
         },
         :render => Proc.new {|comment|
-            u = get_user_by_id(comment["user_id"]) || DeletedUser
+            u = get_user_by_id(comment[:user_id].to_i) || DeletedUser
             comment_to_html(comment,u)
         },
         :start => start,
         :perpage => UserCommentsPerPage,
-        :link => "/usercomments/#{H.urlencode user['username']}/$"
+        :link => "/usercomments/#{H.urlencode user[:username]}/$"
     }
     H.page {
-        H.h2 {"#{H.entities user['username']} comments"}+
+        H.h2 {"#{H.entities user[:username]} comments"}+
         H.div("id" => "comments") {
             list_items(paginate)
         }
@@ -244,7 +262,7 @@ get "/news/:news_id" do
             "thread_id" => news[:id],
             "topcomment" => true
         }
-        user = get_user_by_id(news[:user_id]) || DeletedUser
+        user = get_user_by_id(news[:user_id].to_i) || DeletedUser
         top_comment = H.topcomment {comment_to_html(c,user)}
     else
         top_comment = ""
@@ -256,7 +274,7 @@ get "/news/:news_id" do
         }+top_comment+
         if $user
             H.form(:name=>"f") {
-                H.inputhidden(:name => "news_id", :value => news["id"])+
+                H.inputhidden(:name => "news_id", :value => news[:id])+
                 H.inputhidden(:name => "comment_id", :value => -1)+
                 H.inputhidden(:name => "parent_id", :value => -1)+
                 H.textarea(:name => "comment", :cols => 60, :rows => 10) {}+H.br+
@@ -264,21 +282,20 @@ get "/news/:news_id" do
             }+H.div(:id => "errormsg"){}
         else
             H.br
-        #end +
-        end
-        #render_comments_for_news(news[:id])+
-        #H.script() {'
-       #     $(function() {
-       #         $("input[name=post_comment]").click(post_comment);
-       #     });
-       # '}
+        end +
+        render_comments_for_news(news[:id])+
+        H.script() {'
+            $(function() {
+                $("input[name=post_comment]").click(post_comment);
+            });
+        '}
     }
 end
 
 get "/comment/:news_id/:comment_id" do
-    news = get_news_by_id(params["news_id"])
+    news = get_specific_news_by_query(params["news_id"])
     halt(404,"404 - This news does not exist.") if !news
-    comment = Comments.fetch(params["news_id"],params["comment_id"])
+    comment = get_specific_comment(params["news_id"], params["comment_id"])
     halt(404,"404 - This comment does not exist.") if !comment
     H.page {
         H.section(:id => "newslist") {
@@ -290,28 +307,28 @@ end
 
 def render_comment_subthread(comment,sep="")
     H.div(:class => "singlecomment") {
-        u = get_user_by_id(comment["user_id"]) || DeletedUser
+        u = get_user_by_id(comment[:user_id].to_i) || DeletedUser
         comment_to_html(comment,u)
     }+H.div(:class => "commentreplies") {
         sep+
-        render_comments_for_news(comment['thread_id'],comment["id"].to_i)
+        render_comments_for_news(comment[:thread_id],comment[:id].to_i)
     }
 end
 
 get "/reply/:news_id/:comment_id" do
     redirect "/login" if !$user
-    news = get_news_by_id(params["news_id"])
+    news = get_specific_news_by_query(params["news_id"])
     halt(404,"404 - This news does not exist.") if !news
-    comment = Comments.fetch(params["news_id"],params["comment_id"])
+    comment = get_specific_comment(params["news_id"], params["comment_id"])
     halt(404,"404 - This comment does not exist.") if !comment
-    user = get_user_by_id(comment["user_id"]) || DeletedUser
+    user = get_user_by_id(comment[:user_id].to_i) || DeletedUser
 
     H.set_title "Reply to comment - #{SiteName}"
     H.page {
         news_to_html(news)+
         comment_to_html(comment,user)+
         H.form(:name=>"f") {
-            H.inputhidden(:name => "news_id", :value => news["id"])+
+            H.inputhidden(:name => "news_id", :value => news[:id])+
             H.inputhidden(:name => "comment_id", :value => -1)+
             H.inputhidden(:name => "parent_id", :value => params["comment_id"])+
             H.textarea(:name => "comment", :cols => 60, :rows => 10) {}+H.br+
@@ -327,23 +344,23 @@ end
 
 get "/editcomment/:news_id/:comment_id" do
     redirect "/login" if !$user
-    news = get_news_by_id(params["news_id"])
+    news = get_specific_news_by_query(params["news_id"])
     halt(404,"404 - This news does not exist.") if !news
-    comment = Comments.fetch(params["news_id"],params["comment_id"])
+    comment = get_specific_comment(params["news_id"], params["comment_id"])
     halt(404,"404 - This comment does not exist.") if !comment
-    user = get_user_by_id(comment["user_id"]) || DeletedUser
-    halt(500,"Permission denied.") if $user['id'].to_i != user['id'].to_i
+    user = get_user_by_id(comment[:user_id].to_i) || DeletedUser
+    halt(500,"Permission denied.") if $user[:id].to_i != user[:id].to_i
 
     H.set_title "Edit comment - #{SiteName}"
     H.page {
         news_to_html(news)+
         comment_to_html(comment,user)+
         H.form(:name=>"f") {
-            H.inputhidden(:name => "news_id", :value => news["id"])+
+            H.inputhidden(:name => "news_id", :value => news[:id])+
             H.inputhidden(:name => "comment_id",:value => params["comment_id"])+
             H.inputhidden(:name => "parent_id", :value => -1)+
             H.textarea(:name => "comment", :cols => 60, :rows => 10) {
-                H.entities comment['body']
+                H.entities comment[:body]
             }+H.br+
             H.button(:name => "post_comment", :value => "Edit")
         }+H.div(:id => "errormsg"){}+
@@ -360,28 +377,28 @@ end
 
 get "/editnews/:news_id" do
     redirect "/login" if !$user
-    news = get_news_by_id(params["news_id"])
+    news = get_specific_news_by_query(params["news_id"])
     halt(404,"404 - This news does not exist.") if !news
-    halt(500,"Permission denied.") if $user['id'].to_i != news['user_id'].to_i
+    halt(500,"Permission denied.") if $user[:id].to_i != news[:user_id].to_i
 
     if news_domain(news)
         text = ""
     else
         text = news_text(news)
-        news['url'] = ""
+        news[:url] = ""
     end
     H.set_title "Edit news - #{SiteName}"
     H.page {
         news_to_html(news)+
         H.div(:id => "submitform") {
             H.form(:name=>"f") {
-                H.inputhidden(:name => "news_id", :value => news['id'])+
+                H.inputhidden(:name => "news_id", :value => news[:id])+
                 H.label(:for => "title") {"title"}+
                 H.inputtext(:id => "title", :name => "title", :size => 80,
                             :value => H.entities(news['title']))+H.br+
                 H.label(:for => "url") {"url"}+H.br+
                 H.inputtext(:id => "url", :name => "url", :size => 60,
-                            :value => H.entities(news['url']))+H.br+
+                            :value => H.entities(news[:url]))+H.br+
                 "or if you don't have an url type some text"+
                 H.br+
                 H.label(:for => "text") {"text"}+
@@ -642,7 +659,7 @@ post '/api/postcomment' do
                        parameter."
         }.to_json
     end
-    info = insert_comment(params["news_id"].to_i,$user['id'],
+    info = insert_comment(params["news_id"].to_i,$user[:id],
                           params["comment_id"].to_i,
                           params["parent_id"].to_i,params["comment"])
     return {
@@ -734,7 +751,7 @@ get  '/api/getcomments/:news_id' do
     return {
         :status => "err",
         :error => "Wrong news ID."
-    }.to_json if not get_news_by_id(params[:news_id])
+    }.to_json if not get_specific_news_by_query(params[:news_id])
     thread = Comments.fetch_thread(params[:news_id])
     top_comments = []
     thread.each{|parent,replies|
@@ -742,7 +759,7 @@ get  '/api/getcomments/:news_id' do
             top_comments = replies
         end
         replies.each{|r|
-            user = get_user_by_id(r['user_id']) || DeletedUser
+            user = get_user_by_id(r['user_id'].to_i) || DeletedUser
             r['username'] = user['username']
             r['replies'] = thread[r['id']] || []
             if r['up']
@@ -1130,7 +1147,13 @@ def get_num_user_submitted_articles(user)
 end
 
 def get_user_by_id(id)
-  user = $aki_db["select * from users where id = #{id}"]
+  user = {}
+  base_details = $aki_db["select * from users where id = #{id}"]
+  base_details.collect { |row|
+    row.each { |k,v|
+      user[k] = v
+    }
+  }
   # now retrieve authentication information
   auth_details = $aki_db["select apisecret from auth_details where user_id = #{id}"]
   auth_details.collect { |row|
@@ -1138,6 +1161,20 @@ def get_user_by_id(id)
       user[k] = v
     }
   }
+  # now retrieve karma information
+  latest_karma = $aki_db["select max(ctime) from karma where user_id = #{id}"]
+  latest_karma.collect { |row|
+    row.each { |k,v|
+      user[:karma_incr_time] = v
+    }
+  }
+  total_karma = $aki_db["select sum(amount) from karma where user_id = #{id}"]
+  total_karma.collect { |row|
+    row.each { |k,v|
+      user[:karma] = v
+    }
+  }
+  return user
 end
 
 # Check if the username/password pair identifies an user.
@@ -1168,7 +1205,7 @@ end
 # 'n'   Open links to new windows.
 #
 def user_add_flags(user_id,flags)
-    user = get_user_by_id(user_id)
+    user = get_user_by_id(user_id.to_i)
     return false if !user
     newflags = user['flags']
     flags.each_char{|flag|
@@ -1191,6 +1228,18 @@ end
 
 def user_is_admin?(user)
     user_has_flags?(user,"a")
+end
+
+def get_count_of_user_comments(user_id)
+  count = 0
+  query = "select count(*) from comments where user_id = #{user_id}"
+  ds = $aki_db[query]
+  ds.collect { |row|
+    row.each { |k,v|
+      count = row[k]
+    }
+  }
+  return count
 end
 
 ################################################################################
@@ -1359,8 +1408,8 @@ end
 # error that prevented the vote.
 def vote_news(news_id,user_id,vote_type)
     # Fetch news and user
-    user = ($user and $user["id"] == user_id) ? $user : get_user_by_id(user_id)
-    news = get_news_by_id(news_id)
+    user = ($user and $user[:id] == user_id) ? $user : get_user_by_id(user_id.to_i)
+    news = get_specific_news_by_query(news_id)
     return false,"No such news or user." if !news or !user
 
     # Now it's time to check if the user already voted that news, either
@@ -1371,7 +1420,7 @@ def vote_news(news_id,user_id,vote_type)
     end
 
     # Check if the user has enough karma to perform this operation
-    if $user['id'] != news['user_id']
+    if $user[:id] != news['user_id']
         if (vote_type == :up and
              (get_user_karma(user_id) < NewsUpvoteMinKarma)) or
            (vote_type == :down and
@@ -1519,7 +1568,7 @@ end
 # On failure (for instance news_id does not exist or does not match
 #             the specified user_id) false is returned.
 def edit_news(news_id,title,url,text,user_id)
-    news = get_news_by_id(news_id)
+    news = get_specific_news_by_query(news_id)
     return false if !news or news['user_id'].to_i != user_id.to_i
     return false if !(news['ctime'].to_i > (Time.now.to_i - NewsEditTime))
 
@@ -1549,9 +1598,9 @@ end
 
 # Mark an existing news as removed.
 def del_news(news_id,user_id)
-    news = get_news_by_id(news_id)
-    return false if !news or news['user_id'].to_i != user_id.to_i
-    return false if !(news['ctime'].to_i > (Time.now.to_i - NewsEditTime))
+    news = get_specific_news_by_query(news_id)
+    return false if !news or news[:user_id].to_i != user_id.to_i
+    return false if !(news[:ctime].to_i > (Time.now.to_i - NewsEditTime))
 
     $r.hmset("news:#{news_id}","del",1)
     $r.zrem("news.top",news_id)
@@ -1744,6 +1793,28 @@ end
 # Comments
 ###############################################################################
 
+def get_specific_comment(thread_id, comment_id)
+  query = "select * from comments where id = #{comment_id}"
+  res = {}
+  $aki_db[query].collect { |row|
+    row.each { |k,v|
+      res[k] = v
+    }
+  }
+  res[:thread_id] = thread_id.to_i
+  return res
+end
+
+def delete_comment(comment_id)
+  query = "update comments set deleted = 1 where id = #{comment_id}"
+  $aki_db << query
+end
+
+def update_comment(comment_id, new_body)
+  query = " update comments set body = '#{new_body}' where id = #{comment_id}"
+  $aki_db << query
+end
+
 # This function has different behaviors, depending on the arguments:
 #
 # 1) If comment_id is -1 insert a new comment into the specified news.
@@ -1766,29 +1837,50 @@ end
 # The parent_id is only used for inserts (when comment_id == -1), otherwise
 # is ignored.
 def insert_comment(news_id,user_id,comment_id,parent_id,body)
-    news = get_news_by_id(news_id)
+    # get specific new by query needs to return nil if there is no article
+    news = get_specific_news_by_query(news_id)
     return false if !news
     if comment_id == -1
-        if parent_id.to_i != -1
-            p = Comments.fetch(news_id,parent_id)
-            return false if !p
+        #if parent_id.to_i != -1
+        #    p = Comments.fetch(news_id,parent_id)
+        #    return false if !p
+        #end
+        comment_id = 0
+        $aki_db.transaction do
+          query = "
+            insert into comments
+              (
+                body,
+                ctime,
+                parent_id,
+                user_id,
+                article_id,
+                deleted
+              )
+            values
+              (
+                '#{body}',
+                now(),
+                #{parent_id},
+                #{user_id},
+                #{news_id},
+                0
+              )"
+          $aki_db << query
+          comment_id = 0
+          query = "select id from comments where body = '#{body}' and article_id = #{news_id} and user_id = #{user_id}"
+          ds = $aki_db[query]
+          ds.collect { |row|
+            row.each { |k,v|
+              comment_id = v 
+            }
+          }
         end
-        comment = {"score" => 0,
-                   "body" => body,
-                   "parent_id" => parent_id,
-                   "user_id" => user_id,
-                   "ctime" => Time.now.to_i,
-                   "up" => [user_id.to_i] };
-        comment_id = Comments.insert(news_id,comment)
-        return false if !comment_id
-        $r.hincrby("news:#{news_id}","comments",1);
-        $r.zadd("user.comments:#{user_id}",
-            Time.now.to_i,
-            news_id.to_s+"-"+comment_id.to_s);
-        # increment_user_karma_by(user_id,KarmaIncrementComment)
-        if p and $r.exists("user:#{p['user_id']}")
-            $r.hincrby("user:#{p['user_id']}","replies",1)
-        end
+        return false if comment_id == 0
+        increment_user_karma_by(user_id,KarmaIncrementComment)
+        #if p and $r.exists("user:#{p['user_id']}")
+        #    $r.hincrby("user:#{p['user_id']}","replies",1)
+        #end
         return {
             "news_id" => news_id,
             "comment_id" => comment_id,
@@ -1800,22 +1892,19 @@ def insert_comment(news_id,user_id,comment_id,parent_id,body)
     # delete the comment. So we make sure the user_id of the request
     # matches the user_id of the comment.
     # We also make sure the user is in time for an edit operation.
-    c = Comments.fetch(news_id,comment_id)
-    return false if !c or c['user_id'].to_i != user_id.to_i
-    return false if !(c['ctime'].to_i > (Time.now.to_i - CommentEditTime))
+    c = get_specific_comment(news_id, comment_id)
+    return false if !c or c[:user_id].to_i != user_id.to_i
+    return false if !(c[:ctime].to_i > (Time.now.to_i - CommentEditTime))
 
     if body.length == 0
-        return false if !Comments.del_comment(news_id,comment_id)
-        $r.hincrby("news:#{news_id}","comments",-1);
+        delete_comment(comment_id)
         return {
             "news_id" => news_id,
             "comment_id" => comment_id,
             "op" => "delete"
         }
     else
-        update = {"body" => body}
-        update = {"del" => 0} if c['del'].to_i == 1
-        return false if !Comments.edit(news_id,comment_id,update)
+        update_comment(comment_id, body)
         return {
             "news_id" => news_id,
             "comment_id" => comment_id,
@@ -1850,49 +1939,51 @@ end
 # 'c' is the comment representation as a Ruby hash.
 # 'u' is the user, obtained from the user_id by the caller.
 def comment_to_html(c,u)
-    indent = "margin-left:#{c['level'].to_i*CommentReplyShift}px"
-    score = compute_comment_score(c)
-    news_id = c['thread_id']
+    #indent = "margin-left:#{c['level'].to_i*CommentReplyShift}px"
+    indent = 3
+    #score = compute_comment_score(c)
+    score = 666
+    news_id = c[:article_id]
 
-    if c['del'] and c['del'].to_i == 1
+    if c[:deleted] and c[:deleted].to_i == 1
         return H.article(:style => indent,:class=>"commented deleted") {
             "[comment deleted]"
         }
     end
-    show_edit_link = !c['topcomment'] &&
-                ($user && ($user['id'].to_i == c['user_id'].to_i)) &&
-                (c['ctime'].to_i > (Time.now.to_i - CommentEditTime))
+    show_edit_link = 
+                ($user && ($user[:id].to_i == c[:user_id].to_i)) &&
+                (c[:ctime].to_i > (Time.now.to_i - CommentEditTime))
 
-    comment_id = "#{news_id}-#{c['id']}"
+    comment_id = "#{news_id}-#{c[:id]}"
     H.article(:class => "comment", :style => indent,
               "data-comment-id" => comment_id, :id => comment_id) {
         H.span(:class => "avatar") {
-            email = u["email"] || ""
+            email = u[:email] || ""
             digest = Digest::MD5.hexdigest(email)
             H.img(:src=>"http://gravatar.com/avatar/#{digest}?s=48&d=mm")
         }+H.span(:class => "info") {
             H.span(:class => "username") {
-                H.a(:href=>"/user/"+H.urlencode(u["username"])) {
-                    H.entities u["username"]
+                H.a(:href=>"/user/"+H.urlencode(u[:username])) {
+                    H.entities u[:username]
                 }
-            }+" "+str_elapsed(c["ctime"].to_i)+". "+
-            if !c['topcomment']
-                H.a(:href=>"/comment/#{news_id}/#{c["id"]}", :class=>"reply") {
+            }+" "+str_elapsed(c[:ctime].to_i)+". "+
+            if !c[:topcomment]
+                H.a(:href=>"/comment/#{news_id}/#{c[:id]}", :class=>"reply") {
                     "link"
                 }+" "
             else "" end +
-            if $user and !c['topcomment']
-                H.a(:href=>"/reply/#{news_id}/#{c["id"]}", :class=>"reply") {
+            if $user and !c[:topcomment]
+                H.a(:href=>"/reply/#{news_id}/#{c[:id]}", :class=>"reply") {
                     "reply"
                 }+" "
             else " " end +
-            if !c['topcomment']
+            if !c[:topcomment]
                 upclass = "uparrow"
                 downclass = "downarrow"
-                if $user and c['up'] and c['up'].index($user['id'].to_i)
+                if $user and c[:up] and c[:up].index($user[:id].to_i)
                     upclass << " voted"
                     downclass << " disabled"
-                elsif $user and c['down'] and c['down'].index($user['id'].to_i)
+                elsif $user and c[:down] and c[:down].index($user[:id].to_i)
                     downclass << " voted"
                     upclass << " disabled"
                 end
@@ -1905,25 +1996,69 @@ def comment_to_html(c,u)
                 }
             else " " end +
             if show_edit_link
-                H.a(:href=> "/editcomment/#{news_id}/#{c["id"]}",
+                H.a(:href=> "/editcomment/#{news_id}/#{c[:id]}",
                     :class =>"reply") {"edit"}+
                     " (#{
-                        (CommentEditTime - (Time.now.to_i-c['ctime'].to_i))/60
+                        (CommentEditTime - (Time.now.to_i-c[:ctime].to_i))/60
                     } minutes left)"
             else "" end
         }+H.pre {
-            urls_to_links H.entities(c["body"].strip)
+            urls_to_links H.entities(c[:body].strip)
         }
     }
+end
+
+def get_all_comments_for_user(user_id, limit)
+  query = "select * from comments where user_id = #{user_id} order by ctime desc limit #{limit}"
+  res = $aki_db[query]
+  comments = {}
+  res.enum_for(:each_with_index).collect { |row, index|
+    comment = {}
+    row.each { |k,v|
+      comment[k] = v
+    }
+    comments[index] = comment
+  }
+  return comments
+end
+
+def get_all_comments_for_article(news_id)
+  query = "select * from comments where article_id = #{news_id}"
+  res = $aki_db[query]
+  comments = {}
+  res.enum_for(:each_with_index).collect { |row, index|
+    comment = {}
+    row.each { |k,v|
+      comment[k] = v
+    }
+    comments[index] = comment
+  }
+  return comments
+end
+
+def akiban_render_comments_rec(comment, block)
+  block.call(comment) if ! comment[:deleted] || comment[:parent_id] != -1
+  if comment[:parent_id] != -1
+    parent_comment = get_specific_comment(comment[:article_id], comment[:parent_id])
+    akiban_render_comments_rec(parent_comment, block)
+  end
+end
+
+# TODO clean this up greatly
+def akiban_render_comments(news_id, root, &block)
+  comments = get_all_comments_for_article(news_id)
+  comments.each { |index, comment|
+    akiban_render_comments_rec(comment, block)
+  }
 end
 
 def render_comments_for_news(news_id,root=-1)
     html = ""
     user = {}
-    Comments.render_comments(news_id,root) {|c|
-        user[c["id"]] = get_user_by_id(c["user_id"]) if !user[c["id"]]
-        user[c["id"]] = DeletedUser if !user[c["id"]]
-        u = user[c["id"]]
+    akiban_render_comments(news_id, root) { |c| 
+        user[c[:id]] = get_user_by_id(c[:user_id].to_i) if !user[c[:id]]
+        user[c[:id]] = DeletedUser if !user[c[:id]]
+        u = user[c[:id]]
         html << comment_to_html(c,u)
     }
     H.div("id" => "comments") {html}
@@ -1942,15 +2077,13 @@ end
 # Get comments in chronological order for the specified user in the
 # specified range.
 def get_user_comments(user_id,start,count)
-    numitems = $r.zcard("user.comments:#{user_id}").to_i
-    ids = $r.zrevrange("user.comments:#{user_id}",start,start+(count-1))
-    comments = []
-    ids.each{|id|
-        news_id,comment_id = id.split('-')
-        comment = Comments.fetch(news_id,comment_id)
-        comments << comment if comment
+    numitems = get_count_of_user_comments(user_id)
+    comments = get_all_comments_for_user(user_id, count-1)
+    ret_comments = []
+    comments.each { |index,comment|
+      ret_comments << comment
     }
-    [comments,numitems]
+    [ret_comments,numitems]
 end
 
 ###############################################################################
