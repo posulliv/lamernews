@@ -1281,13 +1281,25 @@ where
   end
 
   query += " limit #{limit}"
-  result = $aki_db[query]
+  results = []
 
-  result.each { |n|
-    update_news_rank_if_needed(n) if opt[:update_rank]
-  }
+  $aki_db.fetch(query) do |row|
+    result = {}
+    update_news_rank_if_needed(row) if opt[:update_rank]
+    row.each do |k,v|
+      result[k] = v
+    end
+    query = "select count(*) from comments where article_id = #{row[:id]}"
+    res = $aki_db[query]
+    res.collect { |inner_row|
+      inner_row.each { |k,v|
+        result[:comments] = v
+      }
+    }
+    results << result
+  end
 
-  return result
+  return results
 end
 
 def get_specific_news_by_query(news_id, opt={})
@@ -1659,9 +1671,9 @@ end
 # This function expects as input a news entry as obtained from
 # the get_news_by_id function.
 def news_to_html(news)
-    return H.article(:class => "deleted") {
-        "[deleted news]"
-    } if news["del"]
+    #return H.article(:class => "deleted") {
+    #    "[deleted news]"
+    #} if news[:del]
     domain = news_domain(news)
     news = {}.merge(news) # Copy the object so we can modify it as we wish.
     news[:url] = "/news/#{news[:id]}" if !domain
@@ -1688,7 +1700,7 @@ def news_to_html(news)
                 "at "+H.entities(domain)
             else "" end +
             if ($user and $user[:id].to_i == news[:user_id].to_i and
-                news['ctime'].to_i > (Time.now.to_i - NewsEditTime))
+                news[:ctime].to_i > (Time.now.to_i - NewsEditTime))
                 " " + H.a(:href => "/editnews/#{news[:id]}") {
                     "[edit]"
                 }
@@ -1705,14 +1717,13 @@ def news_to_html(news)
                 }
             }+" "+str_elapsed(news[:ctime].to_i)+" "+
             H.a(:href => "/news/#{news[:id]}") {
-            #    news[:comments]+" comments"
+                news[:comments].to_s+" comments"
             }
         }+
         if params and params[:debug] and $user and user_is_admin?($user)
-            "id: "+news["id"].to_s+" "+
-            "score: "+news["score"].to_s+" "+
-            "rank: "+compute_news_rank(news).to_s+" "+
-            "zset_rank: "+$r.zscore("news.top",news["id"]).to_s
+            "id: "+news[:id].to_s+" "+
+            "score: "+news[:score].to_s+" "+
+            "rank: "+compute_news_rank(news).to_s+" "
         else "" end
     }+"\n"
 end
