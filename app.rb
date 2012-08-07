@@ -442,13 +442,13 @@ get "/user/:username" do
                 H.label(:for => "email") {
                     "email (not visible, used for gravatar)"
                 }+H.br+
-                #H.inputtext(:id => "email", :name => "email", :size => 40,
-                #            :value => H.entities(user[:email]))+H.br+
+                H.inputtext(:id => "email", :name => "email", :size => 40,
+                            :value => user[:email] ? H.entities(user[:email]) : '')+H.br+
                 H.label(:for => "password") {
                     "change password (optional)"
                 }+H.br+
                 H.inputpass(:name => "password", :size => 40)+H.br+
-                H.label(:for => "about") {"about"}+H.br+
+                #H.label(:for => "about") {"about"}+H.br+
                 #H.textarea(:id => "about", :name => "about", :cols => 60, :rows => 10){
                 #    H.entities(user['about'])
                 #}+H.br+
@@ -665,7 +665,7 @@ post '/api/updateprofile' do
     if not check_api_secret
         return {:status => "err", :error => "Wrong form secret."}.to_json
     end
-    if !check_params(:about, :email, :password)
+    if !check_params(:email, :password)
         return {:status => "err", :error => "Missing parameters."}.to_json
     end
     if params[:password].length > 0
@@ -676,12 +676,10 @@ post '/api/updateprofile' do
                           "Min length: #{PasswordMinLength}"
             }.to_json
         end
-        $r.hmset("user:#{$user['id']}","password",
-            hash_password(params[:password],$user['salt']))
+        update_user_password($user[:id], hash_password(params[:password], 
+                                                       $user[:salt]))
     end
-    $r.hmset("user:#{$user['id']}",
-        "about", params[:about][0..4095],
-        "email", params[:email][0..255])
+    update_user_email($user[:id], params[:email][0..255])
     return {:status => "ok"}.to_json
 end
 
@@ -961,6 +959,14 @@ def get_rand
     rand = "";
     File.open("/dev/urandom").read(20).each_byte{|x| rand << sprintf("%02x",x)}
     rand
+end
+
+def update_user_password(user_id, new_password)
+  $aki_db << "update users set password = '#{new_password}' where id = #{user_id}"
+end
+
+def update_user_email(user_id, new_email)
+  $aki_db << "update users set email = '#{new_email}' where id = #{user_id}"
 end
 
 # check database whether given username already exists
