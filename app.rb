@@ -1386,8 +1386,7 @@ where
     row.each do |k,v|
       result[k] = v
     end
-    query = "select count(*) from comments where article_id = #{row[:id]}"
-    res = $aki_db[query]
+    res = $aki_db["select count(*) from comments where article_id = ?", row[:id]]
     res.collect { |inner_row|
       inner_row.each { |k,v|
         result[:comments] = v
@@ -1578,9 +1577,9 @@ def vote_news(news_id,user_id,vote_type)
 end
 
 def get_total_comment_votes_type(comment_id, vote_type)
-  query = "select count(*) from votes v, comment_votes cv where v.id = cv.vote_id and cv.comment_id = #{comment_id} and v.vote = #{vote_type}"
+  res = $aki_db["select count(*) from votes v, comment_votes cv where v.id = cv.vote_id and cv.comment_id = ? and v.vote = ?", comment_id, vote_type]
   total = 0
-  $aki_db.fetch(query) do |row|
+  res.collect do |row|
     row.each do |k,v|
       total = v
     end
@@ -1589,9 +1588,9 @@ def get_total_comment_votes_type(comment_id, vote_type)
 end
 
 def get_total_article_votes_type(article_id, vote_type)
-  query = "select count(*) from votes v, article_votes av where v.id = av.vote_id and av.article_id = #{article_id} and v.vote = #{vote_type}"
   total = 0
-  $aki_db.fetch(query) do |row|
+  res = $aki_db["select count(*) from votes v, article_votes av where v.id = av.vote_id and av.article_id = ? and v.vote = ?", article_id, vote_type]
+  res.collect do |row|
     row.each do |k,v|
       total = v
     end
@@ -1928,13 +1927,13 @@ end
 ###############################################################################
 
 def get_specific_comment(thread_id, comment_id)
-  query = "select * from comments where id = #{comment_id}"
   res = {}
-  $aki_db[query].collect { |row|
+  ds = $aki_db["select * from comments where id = ?", comment_id]
+  ds.collect do |row|
     row.each { |k,v|
       res[k] = v
     }
-  }
+  end
   res[:thread_id] = thread_id.to_i
   # get voting counts for this comment
   res[:up] = get_total_comment_votes_type(comment_id, 1)
@@ -2197,8 +2196,8 @@ end
 
 def render_comments_for_news(news_id,root=-1)
     html = ""
-    user = {}
     akiban_render_comments(news_id, root, 1) { |c| 
+        user = {}
         user = get_user_by_id(c[:user_id].to_i) if !user[:id]
         user = DeletedUser if !user[:id]
         html << comment_to_html(c,user)
