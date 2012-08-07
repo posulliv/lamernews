@@ -1266,6 +1266,78 @@ def get_count_of_news()
   return count
 end
 
+def get_count_of_news_by_user(user_id)
+  count = 0
+  query = "
+  select 
+    count(*) 
+  from 
+    articles a, 
+    article_votes av, 
+    votes v 
+  where 
+    a.id = av.article_id and 
+    v.vote = 1 and 
+    v.user_id = #{user_id}"
+  ds = $aki_db[query]
+  ds.collect { |row|
+    row.each { |k,v|
+      count = row[k]
+    }
+  }
+  return count
+end
+
+def get_news_saved_by_user(user_id, limit)
+  query = "
+    select
+      a.id, 
+      a.title,
+      a.url,
+      a.ctime,
+      a.score,
+      a.rank,
+      u.username
+    from
+      articles a,
+      article_votes av,
+      votes v,
+      users u
+    where
+      v.id = av.vote_id and
+      a.id = av.article_id and
+      v.user_id = u.id and
+      u.id = #{user_id} and
+      v.vote = 1
+    order by a.rank desc
+    limit #{limit}"
+     
+  results = []
+
+  $aki_db.fetch(query) do |row|
+    result = {}
+    update_news_rank_if_needed(row) if opt[:update_rank]
+    row.each do |k,v|
+      result[k] = v
+    end
+    query = "select count(*) from comments where article_id = #{row[:id]}"
+    res = $aki_db[query]
+    res.collect { |inner_row|
+      inner_row.each { |k,v|
+        result[:comments] = v
+      }
+    }
+    # Load $User vote information if we are in the context of a
+    # registered user.
+    result[:up] = get_total_article_votes_type(row[:id], 1)
+    result[:down] = get_total_article_votes_type(row[:id], -1)
+
+    results << result
+  end
+
+  return results
+end
+
 def get_news_by_query(order_by, limit, opt={})
   query = "
 select 
@@ -1829,9 +1901,8 @@ end
 
 # Get saved news of current user
 def get_saved_news(user_id,start,count)
-    numitems = $r.zcard("user.saved:#{user_id}").to_i
-    news_ids = $r.zrevrange("user.saved:#{user_id}",start,start+(count-1))
-    return get_news_by_id(news_ids),numitems
+    numitems = get_count_of_news_by_user(user_id.to_i)
+    return get_news_saved_by_user(user_id.to_i, count - 1),numitems
 end
 
 ###############################################################################
