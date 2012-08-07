@@ -33,6 +33,7 @@ require 'pg'
 require 'page'
 require 'sinatra'
 require 'json'
+require 'time'
 require 'digest/sha1'
 require 'digest/md5'
 require 'comments'
@@ -420,7 +421,7 @@ get "/user/:username" do
             }+
             H.ul {
                 H.li {
-                    H.b {"created "}+str_elapsed(user["ctime"].to_i)
+                    H.b {"created "}+str_elapsed(Time.parse(user["ctime"]).to_i)
                 }+
                 H.li {H.b {"karma "}+ "#{user["karma"]} points"}+
                 H.li {H.b {"posted news "}+posted_news.to_s}+
@@ -2111,8 +2112,7 @@ def get_all_comments_for_user(user_id, limit)
 end
 
 def get_all_comments_for_article(news_id)
-  query = "select * from comments where article_id = #{news_id}"
-  res = $aki_db[query]
+  res = $aki_db["select * from comments where article_id = ?", news_id]
   comments = {}
   res.enum_for(:each_with_index).collect { |row, index|
     comment = {}
@@ -2125,8 +2125,7 @@ def get_all_comments_for_article(news_id)
 end
 
 def get_all_comments_for_article_with_parent(news_id, parent_id)
-  query = "select * from comments where article_id = #{news_id} and parent_id = #{parent_id}"
-  res = $aki_db[query]
+  res = $aki_db["select * from comments where article_id = ? and parent_id = ?", news_id, parent_id]
   comments = {}
   res.enum_for(:each_with_index).collect { |row, index|
     comment = {}
