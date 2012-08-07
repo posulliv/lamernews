@@ -1619,6 +1619,7 @@ def insert_news(title,url,text,user_id)
     #ctime = Time.new.to_i
     news_id = 0
     $aki_db.transaction do
+      title = title.gsub(/\\/, '\&\&').gsub(/'/, "''")
       query = "
         insert into articles
           (
@@ -1938,6 +1939,7 @@ def insert_comment(news_id,user_id,comment_id,parent_id,body)
         #end
         comment_id = 0
         $aki_db.transaction do
+          body = body.gsub(/\\/, '\&\&').gsub(/'/, "''")
           query = "
             insert into comments
               (
