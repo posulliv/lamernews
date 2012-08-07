@@ -608,8 +608,6 @@ post '/api/votenews' do
     if not check_api_secret
         return {:status => "err", :error => "Wrong form secret."}.to_json
     end
-    require 'pp'
-    pp params
     # Params sanity check
     if (!check_params "news_id","vote_type") or (params["vote_type"] != "up" and
                                                  params["vote_type"] != "down")
@@ -914,6 +912,7 @@ def auth_user(auth)
         $user[:karma] = v
       }
     }
+    $user[:voted] = get_user_article_votes($user[:id])
 end
 
 # In Lamer News users get karma visiting the site.
@@ -1115,7 +1114,25 @@ def get_user_by_username(username)
       user[:karma] = v
     }
   }
+  user[:voted] = get_user_article_votes(user[:id])
   return user
+end
+
+def get_user_article_votes(user_id)
+  query = "
+  select
+    av.article_id
+  from 
+    article_votes av,
+    votes v
+  where
+    v.id = av.vote_id and
+    v.user_id = #{user_id}"
+  res = []
+  $aki_db.fetch(query) do |row|
+    res[row[:article_id]] = true
+  end
+  return res
 end
 
 # get number of comments this user has submitted
@@ -1534,6 +1551,7 @@ def vote_news(news_id,user_id,vote_type)
     end
 
     insert_article_vote(vote_type, news_id, user_id)
+    $user[:voted][news_id] = true
 
     # Compute the new values of score and karma, updating the news accordingly.
     score = compute_news_score(news)
@@ -1786,10 +1804,10 @@ def news_to_html(news)
     news[:url] = "/news/#{news[:id]}" if !domain
     upclass = "uparrow"
     downclass = "downarrow"
-    if news[:up] and news[:up] > 0 and $user
+    if news[:up] and news[:up] > 0 and $user and $user[:voted][news[:id]]
         upclass << " voted"
         downclass << " disabled"
-    elsif news[:down] and news[:down] > 0 and $user
+    elsif news[:down] and news[:down] > 0 and $user and $user[:voted][news[:id]]
         downclass << " voted"
         upclass << " disabled"
     end

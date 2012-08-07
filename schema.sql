@@ -62,13 +62,15 @@ create table votes
 create table comment_votes
 (
   comment_id bigint not null,
-  vote_id bigint not null
+  vote_id bigint not null,
+  primary key(comment_id, vote_id)
 );
 
 create table article_votes
 (
   article_id bigint not null,
-  vote_id bigint not null
+  vote_id bigint not null,
+  primary key(article_id, vote_id)
 );
 
 create unique index username_idx on users(username);
