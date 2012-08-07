@@ -152,10 +152,9 @@ end
 
 get '/replies' do
     redirect "/login" if !$user
-    comments,count = get_user_comments($user['id'],0,SubthreadsInRepliesPage)
+    comments,count = get_user_comments($user[:id],0,SubthreadsInRepliesPage)
     H.set_title "Your threads - #{SiteName}"
     H.page {
-        $r.hset("user:#{$user['id']}","replies",0)
         H.h2 {"Your threads"}+
         H.div("id" => "comments") {
             aux = ""
@@ -266,7 +265,7 @@ get "/news/:news_id" do
         else
             H.br
         end +
-        render_comments_for_news(news[:id])+
+        render_comments_for_news(news[:id].to_i)+
         H.script() {'
             $(function() {
                 $("input[name=post_comment]").click(post_comment);
@@ -294,7 +293,7 @@ def render_comment_subthread(comment,sep="")
         comment_to_html(comment,u)
     }+H.div(:class => "commentreplies") {
         sep+
-        render_comments_for_news(comment[:thread_id],comment[:id].to_i)
+        render_comments_for_news(comment[:thread_id].to_i,comment[:id].to_i)
     }
 end
 
@@ -1301,10 +1300,8 @@ where
     }
     # Load $User vote information if we are in the context of a
     # registered user.
-    if $user
-      result[:up] = get_total_article_votes_type(row[:id], 1)
-      result[:down] = get_total_article_votes_type(row[:id], -1)
-    end
+    result[:up] = get_total_article_votes_type(row[:id], 1)
+    result[:down] = get_total_article_votes_type(row[:id], -1)
 
     results << result
   end
@@ -1711,10 +1708,10 @@ def news_to_html(news)
     news[:url] = "/news/#{news[:id]}" if !domain
     upclass = "uparrow"
     downclass = "downarrow"
-    if news[:up] and news[:up] > 0
+    if news[:up] and news[:up] > 0 and $user
         upclass << " voted"
         downclass << " disabled"
-    elsif news[:down] and news[:down] > 0
+    elsif news[:down] and news[:down] > 0 and $user
         downclass << " voted"
         upclass << " disabled"
     end
